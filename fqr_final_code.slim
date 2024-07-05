@@ -1,0 +1,64 @@
+initialize() {
+	defineConstant("COUNT", 3);
+	defineConstant("Mij", 0.2);
+	defineConstant("Mji", 0.2);
+	defineConstant("ENV", 4.0);
+	initializeMutationRate(1e-7);
+	initializeMutationType("m1", 0.5, "f", 0.0); //Neutral
+	initializeMutationType("m2", 0.5, "n", 0.0, 0.2); //QTN
+	initializeGenomicElementType("g1", c(m1,m2), c(1.0,0.1));
+	initializeGenomicElement(g1, 0, 99999);
+	initializeRecombinationRate(1e-8);
+}
+
+mutationEffect(m2) { return 1.0; } // make QTN neutral
+
+1 early() {
+	m1.color = "yellow";
+	m2.color = "blue";
+	
+	for (i in 0:(COUNT-1))
+		sim.addSubpop(i, 500);
+	subpops = sim.subpopulations;
+	for (i in 1:(COUNT-1)) subpops[i].setMigrationRates(i-1, Mij);
+	for (i in 0:(COUNT-2)) subpops[i].setMigrationRates(i+1, Mji);
+}
+
+1:12000 late() {
+
+k=0;
+OPTs = c(0.0,2.5,5.0);
+
+for (subpop in sim.subpopulations){
+k=k+1;
+inds = subpop.individuals;
+phenotypes = inds.sumOfMutationsOfType(m2);
+OPT=OPTs[k-1];
+//scale = dnorm(OPT, OPT, 2.0);
+
+// defining width of curve
+w = 5.0;
+
+// setting constant value for scale: default norberg
+scale = (1 - ((ENV - OPT))/w^2) * 0.59*E^(0.00633*ENV);
+
+// use scale w/default norberg
+// factor in environment and phenotypes
+inds.fitnessScaling = 1 + dnorm(phenotypes, OPT, 2.0) / scale;
+
+if (sim.cycle % 10 == 0)
+cat(sim.cycle + ": Mean phenotype == " + k + "=" + mean(phenotypes) + "\n");
+
+}
+}
+
+
+12000 late(){
+	f=0;
+	
+	for (subpop in sim.subpopulations){
+		f=f+1;
+		j = subpop.sampleIndividuals(100).genomes;
+		// j.outputVCF(filePath = paste("/somewhere_in_your_computer/",f,".vcf", sep = "") , simplifyNucleotides=T);
+	}
+}

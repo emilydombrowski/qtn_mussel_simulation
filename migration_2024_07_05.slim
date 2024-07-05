@@ -1,0 +1,197 @@
+// set up a simple neutral nonWF simulation
+
+	// 1. Initialize step
+	// Define constants
+	
+initialize() {
+
+// type of simulation: nonWF to add age structure, other components
+	initializeSLiMModelType("nonWF");
+
+// define constants: 
+	
+	// number of subpopulations
+	defineConstant("COUNT", 3);
+	
+	// carrying capacity
+	defineConstant("K", 500);
+	
+	//	life table
+	// right now this is based on approximations that I can come back to
+	// approximately a type III survivorship curve
+	defineConstant("L", c(0.5,0.25,rep(0,18),1));
+	
+	// I wonder if I should dial back to 2? Or up, as life table accounts for 
+	//	changes in survivorship
+	defineConstant("N_offspring",2.3);   
+	
+// stochasticity from matz et al.
+	// sd of environmental effect on fitness, on top of genetic N(0°C,0.5°C) ==> noise
+	defineConstant("esd",0.5);	
+	// plasticity: SD of the fitness bell curve
+	defineConstant("pl",1);			        
+	// lowest possible fitness
+	defineConstant("fitcushion",1e-4);    
+	// height of N peak, for fitness scaling            
+	defineConstant("maxfit",dnorm(0.0,0.0,pl));
+	
+	// initialize mutations:
+	initializeMutationType("m1", 0.5, "f", 0.0); // neutral
+	initializeMutationType("m2", 0.5, "f", 0.2); // QTN
+	m1.convertToSubstitution = T; // useful for nwf
+	
+// initiate migration matrix
+	defineConstant("migMatrix","migration_matrix.txt");
+	
+// genomic architecture
+	initializeGenomicElementType("g1", c(m1, m2), c(1.0, 0.1));
+	initializeGenomicElement(g1, 0, 99999);
+	initializeMutationRate(1e-7);
+	initializeRecombinationRate(1e-8);
+}
+
+
+	// 2. Migration and subpopulation initiation
+	// read in tab separated migration file
+1 early(){
+
+// define constants for early event
+	defineConstant("popscale", 1.0);
+	migrations=readFile(migMatrix);
+	defineConstant("npops",size(migrations));
+	defineConstant("popsizes", c(1500.0, 1500.0, 1500.0));
+	
+	for (i in seqLen(COUNT)) {
+		// calculate subpopulation size
+		psize = 10 + asInteger(popscale*popsizes[i]/25);
+		
+		// add subpopulations for number of populations initiated in count
+		sim.addSubpop(i, psize);
+		
+		subpop = sim.subpopulations;
+		
+		// directions for reading in migration matrix
+		ms=asFloat(strsplit(migrations[i],sep="\t"));
+		// setting migration matrix values as migration in simulation
+		subpop[i].setValue("popmig", ms);
+		
+		// add ind env. effect assuming normal distribution
+		inds = subpop.individuals;
+		inds.tagF=rnorm(size(inds),0,esd);
+		
+		// initiate mutations in subpopulations
+		for (s in subpop){
+		s.genomes.addNewDrawnMutation(m1, 10000);
+		s.genomes.addNewDrawnMutation(m2, 10000);
+		}
+	}
+}
+	
+
+	// 3. Environmental profiles
+	// read in environmental data from RCP climate predictions .txt files
+early() { 
+//env=readFile("00-DATA/balanced_env54pop_sin_a_environment.txt");
+	env = c(4.0, 3.0, 0.0);
+//	migrations=readFile(migMatrix);
+//	defineConstant("npops",size(migrations));
+	
+	for (i in seqAlong(npops)) {
+		pop=sim.subpopulations[i];
+		pop.setValue("env",env[i]); 
+	}
+}
+
+	// 4. Make QTN mutation neutral
+mutationEffect(m2) {
+	return(1.0);
+} 
+
+	// 5. Reproduction and migration
+	// Reproduction occurs randomly; minimum age for individuals
+	// Offspring of same crosses also move based on migration weights
+reproduction() {
+
+	dest = sample(sim.subpopulations, 1, weights=subpop.getValue("popmig"));	
+			
+			for (i in 1:N_offspring) { 
+			// offspring of the same cross migrate together
+				mate = subpop.sampleIndividuals(1, exclude=individual, minAge=2);
+				
+				if(size(mate)>0) {
+					dest.addCrossed(individual, mate);
+				}
+			}
+}
+
+	// 6. Modify child event
+	// #storing individual-specific environmental noise values 
+	//(so they don't change from year to year)
+modifyChild() {
+	child.tagF=rnorm(1,0,esd);
+	return T;
+}
+
+	// 7. QTN fitness and density dependent selection
+2: early() {
+
+	subpop = sim.subpopulations;
+	
+	// looping through each subpopulation
+	for (s in 0:(COUNT - 1))
+	{
+		inds = subpop.individuals;
+		psize = 10 + asInteger(popscale*popsizes[s]/25);
+		subpop[s].setValue("popsize",psize);		
+		
+// age based mortality
+         ages = inds.age; // factoring in life table
+         mortality = L[ages]; // scaling survival to life table
+         survival = 1 - mortality;
+         inds.fitnessScaling = survival;
+         
+         k=0;
+			OPTs = c(0.0,2.5,5.0);
+			k=k+1;
+			inds = subpop.individuals;
+			
+			phenotypes = inds.sumOfMutationsOfType(m2)+ inds.tagF;
+			subpop.setValue("phenotypes",phenotypes);
+			phenoFitness=(fitcushion + dnorm(subpop.getValue("env")- phenotypes, 0, pl)) / (maxfit + fitcushion);
+			
+			// I think right now it is not getting the subpop env. per subpop...essentionially not iterating through
+			// need to iterate through somehow
+			
+			
+			OPT=OPTs[k-1];
+		
+		// implementing carrying capacity
+		// outputs three values, one per subpopulation, by looking at individuals
+		
+		
+//subpop.fitnessScaling = subpop.getValue("popsize")/(subpop.individualCount * mean(inds.fitnessScaling));
+//	subpop.fitnessScaling = subpop.getValue("popsize") / (subpop.individualCount * mean(inds.fitnessScaling)[2]);
+
+		subpop.fitnessScaling = K / sum(inds.fitnessScaling);
+	}
+}
+
+	// 7. late event to track relevant ouputs
+late () {
+	subpops = sim.subpopulations;
+	k = 0; // iterator for keeping track of output
+	
+	for (s in subpops)
+	{
+		inds = s.individuals;
+		k = k + 1;
+		phenotypes = inds.sumOfMutationsOfType(m2);
+		if (sim.cycle % 100 == 0)
+			cat(sim.cycle + " Mean phenotype ==" + k + " = " + mean(phenotypes) + "\n");
+	}
+}
+
+	// 8. output all fixed mutations at end
+12000 late() { 
+//sim.outputFixedMutations(); 
+}
